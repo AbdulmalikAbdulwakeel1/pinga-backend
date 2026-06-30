@@ -1,7 +1,7 @@
 const { query } = require('../config/database');
 const { logActivity } = require('../utils/activityLogger');
 
-const ALL_PLATFORMS = ['instagram', 'facebook', 'whatsapp'];
+const ALL_PLATFORMS = ['instagram', 'facebook', 'whatsapp', 'twitter', 'linkedin', 'tiktok', 'reddit'];
 
 // ─── Get Integrations ──────────────────────────────────────────
 exports.getIntegrations = async (req, res) => {
@@ -303,6 +303,337 @@ exports.connectWhatsApp = async (req, res) => {
   } catch (error) {
     console.error('Connect WhatsApp error:', error);
     res.status(500).json({ success: false, message: 'Failed to connect WhatsApp' });
+  }
+};
+
+// ─── Connect Twitter/X ────────────────────────────────────────
+exports.connectTwitter = async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const { code, redirectUri, codeVerifier } = req.body;
+
+    if (!code || !redirectUri || !codeVerifier) {
+      return res.status(400).json({ success: false, message: 'code, redirectUri, and codeVerifier are required' });
+    }
+
+    const clientId = process.env.TWITTER_CLIENT_ID;
+    const clientSecret = process.env.TWITTER_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(503).json({
+        success: false,
+        message: 'Twitter OAuth not configured. Set TWITTER_CLIENT_ID and TWITTER_CLIENT_SECRET.'
+      });
+    }
+
+    const params = new URLSearchParams({
+      code,
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_verifier: codeVerifier,
+    });
+
+    const tokenRes = await fetch('https://api.twitter.com/2/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+      },
+      body: params.toString(),
+    });
+    const tokenData = await tokenRes.json();
+
+    if (!tokenData.access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to exchange OAuth code for Twitter access token',
+        details: tokenData.error_description || tokenData.error
+      });
+    }
+
+    const userRes = await fetch('https://api.twitter.com/2/users/me?user.fields=name,username', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const userData = await userRes.json();
+    const twitterUser = userData.data || {};
+    const accountName = twitterUser.username || twitterUser.name || 'Twitter Account';
+    const accountId = twitterUser.id || 'unknown';
+
+    await query(
+      `INSERT INTO platform_connections (
+         business_id, platform, account_id, account_name, access_token, refresh_token,
+         is_active, webhook_verified, connected_at
+       ) VALUES ($1, 'twitter', $2, $3, $4, $5, true, false, NOW())
+       ON CONFLICT (business_id, platform) DO UPDATE SET
+         account_id = EXCLUDED.account_id,
+         account_name = EXCLUDED.account_name,
+         access_token = EXCLUDED.access_token,
+         refresh_token = EXCLUDED.refresh_token,
+         is_active = true,
+         deleted_at = NULL,
+         connected_at = NOW(),
+         updated_at = NOW()
+       RETURNING id`,
+      [businessId, accountId, accountName, tokenData.access_token, tokenData.refresh_token || null]
+    );
+
+    logActivity(businessId, req.user.id, 'CONNECT_TWITTER', `Connected Twitter: @${accountName}`, 'integration', null, null, req).catch(() => {});
+
+    res.status(200).json({
+      success: true,
+      message: 'Twitter connected successfully',
+      data: { platform: 'twitter', connected: true, accountName, connectedAt: new Date() }
+    });
+  } catch (error) {
+    console.error('Connect Twitter error:', error);
+    res.status(500).json({ success: false, message: 'Failed to connect Twitter' });
+  }
+};
+
+// ─── Connect LinkedIn ──────────────────────────────────────────
+exports.connectLinkedIn = async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const { code, redirectUri } = req.body;
+
+    if (!code || !redirectUri) {
+      return res.status(400).json({ success: false, message: 'code and redirectUri are required' });
+    }
+
+    const clientId = process.env.LINKEDIN_CLIENT_ID;
+    const clientSecret = process.env.LINKEDIN_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(503).json({
+        success: false,
+        message: 'LinkedIn OAuth not configured. Set LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET.'
+      });
+    }
+
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+
+    const tokenRes = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    const tokenData = await tokenRes.json();
+
+    if (!tokenData.access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to exchange OAuth code for LinkedIn access token',
+        details: tokenData.error_description || tokenData.error
+      });
+    }
+
+    const userRes = await fetch('https://api.linkedin.com/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const userData = await userRes.json();
+    const accountName = userData.name || userData.email || 'LinkedIn Account';
+    const accountId = userData.sub || 'unknown';
+
+    await query(
+      `INSERT INTO platform_connections (
+         business_id, platform, account_id, account_name, access_token, refresh_token,
+         is_active, webhook_verified, connected_at
+       ) VALUES ($1, 'linkedin', $2, $3, $4, $5, true, false, NOW())
+       ON CONFLICT (business_id, platform) DO UPDATE SET
+         account_id = EXCLUDED.account_id,
+         account_name = EXCLUDED.account_name,
+         access_token = EXCLUDED.access_token,
+         refresh_token = EXCLUDED.refresh_token,
+         is_active = true,
+         deleted_at = NULL,
+         connected_at = NOW(),
+         updated_at = NOW()
+       RETURNING id`,
+      [businessId, accountId, accountName, tokenData.access_token, tokenData.refresh_token || null]
+    );
+
+    logActivity(businessId, req.user.id, 'CONNECT_LINKEDIN', `Connected LinkedIn: ${accountName}`, 'integration', null, null, req).catch(() => {});
+
+    res.status(200).json({
+      success: true,
+      message: 'LinkedIn connected successfully',
+      data: { platform: 'linkedin', connected: true, accountName, connectedAt: new Date() }
+    });
+  } catch (error) {
+    console.error('Connect LinkedIn error:', error);
+    res.status(500).json({ success: false, message: 'Failed to connect LinkedIn' });
+  }
+};
+
+// ─── Connect TikTok ────────────────────────────────────────────
+exports.connectTikTok = async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const { code, redirectUri, codeVerifier } = req.body;
+
+    if (!code || !redirectUri || !codeVerifier) {
+      return res.status(400).json({ success: false, message: 'code, redirectUri, and codeVerifier are required' });
+    }
+
+    const clientKey = process.env.TIKTOK_CLIENT_KEY;
+    const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
+
+    if (!clientKey || !clientSecret) {
+      return res.status(503).json({
+        success: false,
+        message: 'TikTok OAuth not configured. Set TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET.'
+      });
+    }
+
+    const tokenRes = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_key: clientKey,
+        client_secret: clientSecret,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+        code_verifier: codeVerifier,
+      }).toString(),
+    });
+    const tokenData = await tokenRes.json();
+
+    if (!tokenData.access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to exchange OAuth code for TikTok access token',
+        details: tokenData.error?.message || tokenData.error
+      });
+    }
+
+    const userRes = await fetch('https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const userData = await userRes.json();
+    const tiktokUser = userData.data?.user || {};
+    const accountName = tiktokUser.display_name || 'TikTok Account';
+    const accountId = tiktokUser.open_id || 'unknown';
+
+    await query(
+      `INSERT INTO platform_connections (
+         business_id, platform, account_id, account_name, access_token, refresh_token,
+         is_active, webhook_verified, connected_at
+       ) VALUES ($1, 'tiktok', $2, $3, $4, $5, true, false, NOW())
+       ON CONFLICT (business_id, platform) DO UPDATE SET
+         account_id = EXCLUDED.account_id,
+         account_name = EXCLUDED.account_name,
+         access_token = EXCLUDED.access_token,
+         refresh_token = EXCLUDED.refresh_token,
+         is_active = true,
+         deleted_at = NULL,
+         connected_at = NOW(),
+         updated_at = NOW()
+       RETURNING id`,
+      [businessId, accountId, accountName, tokenData.access_token, tokenData.refresh_token || null]
+    );
+
+    logActivity(businessId, req.user.id, 'CONNECT_TIKTOK', `Connected TikTok: ${accountName}`, 'integration', null, null, req).catch(() => {});
+
+    res.status(200).json({
+      success: true,
+      message: 'TikTok connected successfully',
+      data: { platform: 'tiktok', connected: true, accountName, connectedAt: new Date() }
+    });
+  } catch (error) {
+    console.error('Connect TikTok error:', error);
+    res.status(500).json({ success: false, message: 'Failed to connect TikTok' });
+  }
+};
+
+// ─── Connect Reddit ────────────────────────────────────────────
+exports.connectReddit = async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const { code, redirectUri } = req.body;
+
+    if (!code || !redirectUri) {
+      return res.status(400).json({ success: false, message: 'code and redirectUri are required' });
+    }
+
+    const clientId = process.env.REDDIT_CLIENT_ID;
+    const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(503).json({
+        success: false,
+        message: 'Reddit OAuth not configured. Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET.'
+      });
+    }
+
+    const tokenRes = await fetch('https://www.reddit.com/api/v1/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+        'User-Agent': 'Pinga/1.0',
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+      }).toString(),
+    });
+    const tokenData = await tokenRes.json();
+
+    if (!tokenData.access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to exchange OAuth code for Reddit access token',
+        details: tokenData.error
+      });
+    }
+
+    const userRes = await fetch('https://oauth.reddit.com/api/v1/me', {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        'User-Agent': 'Pinga/1.0',
+      },
+    });
+    const userData = await userRes.json();
+    const accountName = userData.name || 'Reddit Account';
+    const accountId = userData.id || 'unknown';
+
+    await query(
+      `INSERT INTO platform_connections (
+         business_id, platform, account_id, account_name, access_token, refresh_token,
+         is_active, webhook_verified, connected_at
+       ) VALUES ($1, 'reddit', $2, $3, $4, $5, true, false, NOW())
+       ON CONFLICT (business_id, platform) DO UPDATE SET
+         account_id = EXCLUDED.account_id,
+         account_name = EXCLUDED.account_name,
+         access_token = EXCLUDED.access_token,
+         refresh_token = EXCLUDED.refresh_token,
+         is_active = true,
+         deleted_at = NULL,
+         connected_at = NOW(),
+         updated_at = NOW()
+       RETURNING id`,
+      [businessId, accountId, accountName, tokenData.access_token, tokenData.refresh_token || null]
+    );
+
+    logActivity(businessId, req.user.id, 'CONNECT_REDDIT', `Connected Reddit: u/${accountName}`, 'integration', null, null, req).catch(() => {});
+
+    res.status(200).json({
+      success: true,
+      message: 'Reddit connected successfully',
+      data: { platform: 'reddit', connected: true, accountName, connectedAt: new Date() }
+    });
+  } catch (error) {
+    console.error('Connect Reddit error:', error);
+    res.status(500).json({ success: false, message: 'Failed to connect Reddit' });
   }
 };
 

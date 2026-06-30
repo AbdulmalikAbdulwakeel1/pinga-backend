@@ -30,6 +30,9 @@ const activityRoutes = require('./routes/activity.routes');
 const integrationRoutes = require('./routes/integration.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const uploadRoutes = require('./routes/upload.routes');
+const keywordMonitorRoutes = require('./routes/keyword-monitor.routes');
+const cron = require('node-cron');
+const { pollAllMonitors } = require('./controllers/keyword-monitor.controller');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -122,6 +125,7 @@ app.use(`/api/${API_VERSION}/activity`, activityRoutes);
 app.use(`/api/${API_VERSION}/integrations`, integrationRoutes);
 app.use(`/api/${API_VERSION}/webhooks`, webhookRoutes);
 app.use(`/api/${API_VERSION}/upload`, uploadRoutes);
+app.use(`/api/${API_VERSION}/monitoring`, keywordMonitorRoutes);
 
 // Welcome
 app.get('/', (req, res) => {
@@ -180,6 +184,12 @@ const startServer = async () => {
   try {
     await pool.query('SELECT NOW()');
     console.log('✅ Database connection established');
+
+    // Poll keyword monitors every 15 minutes
+    cron.schedule('*/15 * * * *', () => {
+      console.log('⏱  Polling keyword monitors...');
+      pollAllMonitors();
+    });
 
     httpServer.listen(PORT, () => {
       console.log('');

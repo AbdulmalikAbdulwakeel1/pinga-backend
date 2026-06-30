@@ -10,20 +10,12 @@ const {
 
 // ─── Helpers ──────────────────────────────────────────────────
 
-const generateTokens = (userId, email, role) => {
-  const accessToken = jwt.sign(
+const generateToken = (userId, email, role) => {
+  return jwt.sign(
     { userId, email, role },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRE || '7d' }
+    { expiresIn: '5h' }
   );
-
-  const refreshToken = jwt.sign(
-    { userId },
-    process.env.JWT_REFRESH_SECRET,
-    { expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d' }
-  );
-
-  return { accessToken, refreshToken };
 };
 
 const generatePin = () => crypto.randomInt(1000, 9999).toString();
@@ -210,7 +202,7 @@ exports.verifyEmail = async (req, res) => {
       [user.id]
     );
 
-    const { accessToken, refreshToken } = generateTokens(user.id, user.email, user.role);
+    const accessToken = generateToken(user.id, user.email, user.role);
 
     // Send welcome email (fire-and-forget)
     sendWelcomeEmail(user.email, user.first_name, user.business_name).catch(err => {
@@ -231,10 +223,7 @@ exports.verifyEmail = async (req, res) => {
           businessName: user.business_name,
           isEmailVerified: true
         },
-        tokens: {
-          accessToken,
-          refreshToken
-        }
+        tokens: { accessToken }
       }
     });
 
@@ -408,7 +397,7 @@ exports.login = async (req, res) => {
       [user.id]
     );
 
-    const { accessToken, refreshToken } = generateTokens(user.id, user.email, user.role);
+    const accessToken = generateToken(user.id, user.email, user.role);
 
     res.status(200).json({
       success: true,
@@ -424,10 +413,7 @@ exports.login = async (req, res) => {
           businessName: user.business_name,
           isEmailVerified: user.is_email_verified
         },
-        tokens: {
-          accessToken,
-          refreshToken
-        }
+        tokens: { accessToken }
       }
     });
 
@@ -474,12 +460,12 @@ exports.refreshToken = async (req, res) => {
       return res.status(403).json({ success: false, error: 'Account is temporarily locked.' });
     }
 
-    const tokens = generateTokens(user.id, user.email, user.role);
+    const accessToken = generateToken(user.id, user.email, user.role);
 
     res.status(200).json({
       success: true,
       message: 'Token refreshed successfully',
-      data: { tokens }
+      data: { tokens: { accessToken } }
     });
 
   } catch (error) {
